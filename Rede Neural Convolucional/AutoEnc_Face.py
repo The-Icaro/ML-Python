@@ -106,7 +106,7 @@ def face_reconhecimento(image_path, dados: dict, modelo):
         print("Não esta no Banco de Dados!")
 
 
-modelo = AutoEnc()
+modelo = U_net()
 dados = {}
 # img_to_enconding para cada img em dados
 # E Fazer o Reconhecimento ou Verificação
