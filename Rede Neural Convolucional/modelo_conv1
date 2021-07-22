@@ -1,0 +1,517 @@
+import numpy as np
+
+
+def softmax(Z):
+    """
+    Calcula para a prop frente o valor de AX com base na função de ativação softmax
+    """
+    e_Z = np.exp(Z - np.max(Z))
+    A = e_Z / e_Z.sum()
+    cache = Z
+    return A, cache
+
+
+def sigmoid(Z):
+    """
+    Calcula para a prop frente o valor de AX com base na função de ativação sigmoid
+    """
+    A = 1 / (1 + np.exp(Z))
+    cache = Z
+    return A, cache
+
+
+def relu(Z):
+    """
+    Calcula para a prop frente o valor de AX com base na função de ativação RELU
+    """
+    A = np.max(0, Z)
+    assert A.shape == Z.shape
+    cache = Z
+    return A, cache
+
+
+def l_relu(Z):
+    """
+    Calcula para a prop frente o valor de AX com base na função de ativação leaky relu
+    """
+    A = np.max(0.01 * Z, Z)
+    assert A.shape == Z.shape
+    cache = Z
+    return A, cache
+
+
+def softmax_prop_tras(dA, cache):
+    Z = cache
+    s = dA.reshape(-1, 1)
+    dZ = np.diagflat(s) - np.dot(s, s.T)
+    return dZ
+
+
+def sig_prop_tras(dA, cache):
+    Z = cache
+    s = 1 / (1 + np.exp(Z))
+    dZ = dA * s * (1 - s)
+    assert dZ.shape == Z.shape
+    return dZ
+
+
+def relu_prop_tras(dA, cache):
+    Z = cache
+    dZ = np.array(dA, copy=True)
+    dZ[Z <= 0] = 0
+    assert dZ.shape == Z.shape
+    return dZ
+
+
+def l_relu_prop_tras(dA, cache):
+    Z = cache
+    dZ = np.array(dA, copy=True)
+    dZ[Z <= 0.01] = 0
+    assert dZ.shape == Z.shape
+    return dZ
+
+
+def ini_at(n_l: list, f_at: list):
+    """
+    Inicia os parametros aleatóriamente para os layers com função de ativação
+    :param n_l: lista com as unidades dos layers, ex - [10, 10] 2 layers com função de ativação, ou seja 2 params W,b
+    :param f_at: lista com os nomes das funções de ativação e em sua respectiva ordem- ['relu', 'relu', 'softmax']
+    :return: params_at: dicionário com os parâmetros
+    """
+    params_at = {}
+    L = len(n_l)
+    for i in range(L):
+        params_at['W' + str(i)] = np.random.randn(n_l[i], n_l[i - 1]) * 0.01
+        params_at['b' + str(i)] = np.zeros((n_l[i], 1))
+        params_at['at' + str(i)] = f_at[i]
+    return params_at
+
+
+def ini_conv(n_conv: int, w_f: list, w_c: list, pad: list, stride: list):
+    """
+    Inicia os parametros para layer convolucional
+    :param n_conv: int de quantos layers conv
+    :param w_f: lista com o shape do filtro, sendo [f, f]
+    :param w_c: lista com as camadas desejadas para o filtro [n_c_ant, n_c, n_c+1.....] precisa ter 1 int a mais que n_conv
+    :exp n_c_ant: int de camadas do layer anterior, então sempre começar com 3 - RGB
+    :exp n_c: já começa com as camadas desejadas para o filtro
+    :exp n_c+1: próx camada do filtro caso esteja com pelo menos 2 n_conv
+    :param pad: lista com int de padding desejados
+    :param stride: lista com int de strides desejados
+    :return: params_conv: dicionário com os valores de WX, bX, padX e strideX em suas respectivas posições
+    """
+    params_conv = {}
+    for i in range(n_conv):
+        w_x = [w_f[i], w_f[i], w_c[i], w_c[i + 1]]
+        b_x = [1, 1, 1, w_c[i + 1]]
+        params_conv['W' + str(i)] = w_x
+        params_conv['b' + str(i)] = b_x
+        params_conv['pad' + str(i)] = pad[i]
+        params_conv['stride' + str(i)] = stride[i]
+    return params_conv
+
+
+def ini_pool(n_pool: int, f, stride, modos):
+    """
+    Inicia os parametros para layer pooling
+    :param n_pool: int de quantos layers pool
+    :param f: shape do layer pool, [1, 3, 5, 7] - ex. com 4 layers 1x1 3x3, 5x5, 7x7
+    :param stride: lista com int de strides desejados
+    :param modos: lista com str dos modos, ['max', 'media', 'l2'] - ex. com 3 layers
+    :return: params_pool: dicionário contendo todas as informações: fX, strideX, modosX em suas respectivas posições
+    """
+    params_pool = {}
+    for i in range(n_pool):
+        params_pool['f' + str(i)] = f[i]
+        params_pool['stride' + str(i)] = stride[i]
+        params_pool['modos' + str(i)] = modos[i]
+    return params_pool
+
+
+def zero_pad(a, pad: int):
+    """
+    Adiciona o padding na imagem do input com 0
+    :param a: Img do Input
+    :param pad: int de quantos pad deseja
+    :return: A_pad: Retorna a imagem com o pad
+    """
+    A_pad = np.pad(a, ((0, 0), (pad, pad), (pad, pad), (0, 0)), 'constant', constant_values=(0, 0))
+    return A_pad
+
+
+def conv_unidade(a_ant, W, b):
+    """
+    Faz o cálculo padrão para uma unidade no layer convolucional, ou seja, para um pedaço da imagem
+    :param a_ant: Imagem do a l-1 de shape [Altura, Largura, Camada] - [n_H, n_W, n_C]
+    :param W: filtro
+    :param b: bias
+    :return: Retorna a aplicação da conv na imagem
+    """
+    s = np.multiply(a_ant, W) + b
+    Z = np.sum(s)
+    return Z
+
+
+def conv_frente(A_ant, W, b, params_conv, stride, pad):
+    """
+    Aplica o cálculo convolucional para o layer inteiro
+    :param A_ant: Array do Input, ou do Layer anterior,
+    shape[N de imagens treino, Altura, Largura, Camadas(Esses N sempre do layer anterior)] - [m, n_H_ant, n_W_ant, n_C_ant]
+    :param W: Filtro, shape [Altura Filtro, Largura Filtro, Camadas Layer Anterior, Camadas Filtro] - [f, f, n_C_ant, n_C]
+    :param b: bias, shape [1, 1, 1, Camadas] - [1, 1, 1, n_C]
+    :param params_conv: Dicionário contendo stride e pad dos layers
+    :return: Z: Valor de Z para o cálculo do próximo layer
+             cache: Tupla contendo A_ant, W, b, params_conv para o cálculo da retropropagação
+    """
+    m, n_H_ant, n_W_ant, n_C_ant = A_ant.shape
+    f, f, n_C_ant, n_C = W.shape
+    n_H = int((n_H_ant + 2 * pad - f) / stride) + 1
+    n_W = int((n_W_ant + 2 * pad - f) / stride) + 1
+    Z = np.zeros((m, n_H, n_W, n_C))
+    A_ant_pad = zero_pad(A_ant, pad)
+    for m in range(m):
+        a_ant_pad = A_ant_pad[m, :, :, :]
+        for h in range(n_H):
+            for w in range(n_W):
+                for c in range(n_C):
+                    vert = h
+                    vert_fim = vert + f
+                    horiz = w
+                    horiz_fim = horiz + f
+                    a_ant_x = a_ant_pad[vert:vert_fim, horiz:horiz_fim, :]
+                    Z[m, h, w, c] = conv_unidade(a_ant_x, W[:, :, :, c], b[:, :, :, c])
+    assert Z.shape == (m, n_H, n_W, n_C)
+    cache = (A_ant, W, b, params_conv)
+    return Z, cache
+
+
+def pool_frente(A_ant, params_pool, f, stride, modo):
+    """
+    Aplica o cálculo pooling para o layer inteiro, podendo ser: MaxPooling, Average(Media), L2
+    :param A_ant: Array do Input, ou do Layer anterior,
+    shape[N de imagens treino, Altura, Largura, Camadas(Esses N sempre do layer anterior)] - [m, n_H_ant, n_W_ant, n_C_ant]
+    :param params_pool: Dicionário contendo f, stride, modo
+    :param f: Int do shape do filtro, ex: 3, 5, 7 = 3x3, 5x5, 7x7
+    :param stride: int com o stride desejado
+    :param modo: str com qual modo deve-se aplicar, sendo max, media ou l2
+    :return: Z: Valor de Z para o cálculo do próximo layer
+             cache: Tupla contendo A_ant, params_conv para o cálculo da retropropagação
+    """
+    m, n_H_ant, n_W_ant, n_C_ant = A_ant.shape
+    n_H = int((n_H_ant - f) / stride) + 1
+    n_W = int((n_W_ant - f) / stride) + 1
+    n_C = n_C_ant
+    Z = np.zeros((m, n_H, n_W, n_C))
+    for m in range(m):
+        a_ant = A_ant[m, :, :, :]
+        for h in range(n_H):
+            for w in range(n_W):
+                for c in range(n_C):
+                    a_ant_x = a_ant[:, :, c]
+                    vert = h
+                    vert_fim = vert + f
+                    horiz = h
+                    horiz_fim = horiz + f
+                    if modo == 'max':
+                        Z[m, h, w, c] = np.max(a_ant_x[vert:vert_fim, horiz:horiz_fim])
+                    if modo == 'media':
+                        Z[m, h, w, c] = np.mean(a_ant_x[vert:vert_fim, horiz:horiz_fim])
+                    if modo == 'l2':
+                        Z[m, h, w, c] = np.sqrt(np.sum(a_ant_x[vert:vert_fim, horiz:horiz_fim]))
+    assert Z.shape == (m, n_H, n_W, n_C)
+    cache = (A_ant, params_pool)
+    return Z, cache
+
+
+def linear_frente(A, W, b):
+    """
+    Fórmula padrão para o calculo da propagação pra frente
+    """
+    Z = np.dot(W, A) + b
+    cache = (A, W, b)
+    return Z, cache
+
+
+def linear_frente_at(A, W, b, at: str):
+    """
+    Adicionando a função de ativação na propagação pra frente
+    """
+    global at_cache
+    Z, cache_linear = linear_frente(A, W, b)
+    if at == 'softmax':
+        A, at_cache = softmax(Z)
+    if at == 'sigmoid':
+        A, at_cache = sigmoid(Z)
+    elif at == 'relu':
+        A, at_cache = relu(Z)
+    elif at == 'lrelu':
+        A, at_cache = l_relu(Z)
+    cache = (cache_linear, at_cache)
+    return A, cache
+
+
+def propagacao_frente(X, params_at, params_conv, params_pool):
+    """
+    Conv > Relu > Maxpool > Conv > Relu > Maxpool > Conv > Relu > Maxpool > Flatten > *FC > *FC > *FC > Sigmoid
+    Cada layer com sue respectivo parametro de inicializacao - W,b
+    Para alterar os parametros, trocar em ini_at, ini_conv, ini_pool
+    Para alterar funcao de ativiacao
+    ## Arrumar, utilizar um for pra fazer
+    """
+    caches = []
+    A_ant = X
+    Z1, cache = conv_frente(A_ant, params_conv['W1'], params_conv['b1'],
+                            params_conv, params_conv['stride1'], params_conv['pad1'])
+    A1, cache = linear_frente_at(Z1, params_at['W1'], params_at['b1'], params_at['at1'])
+    Z2, cache = pool_frente(A1, params_pool, params_pool['f1'], params_pool['stride1'], params_pool['modos1'])
+    A2, cache = conv_frente(Z2, params_conv['W2'], params_conv['b2'],
+                            params_conv, params_conv['stride2'], params_conv['pad2'])
+    Z3, cache = linear_frente_at(A2, params_at['W2'], params_at['b2'], params_at['at2'])
+    A3, cache = pool_frente(Z3, params_pool, params_pool['f2'], params_pool['stride2'], params_pool['modos2'])
+    Z4, cache = conv_frente(A3, params_conv['W3'], params_conv['b3'],
+                            params_conv, params_conv['stride3'], params_conv['pad3'])
+    A4, cache = linear_frente_at(Z4, params_at['W3'], params_at['b3'], params_at['at3'])
+    Z5, cache = pool_frente(A4, params_pool, params_pool['f3'], params_pool['stride3'], params_pool['modos3'])
+    d1, d2, d3, d4 = Z5.shape
+    shape_z = [d1, d2, d3, d4]
+    flatten = Z5.flatten()
+    flatten = flatten.reshape((flatten[0], 1))
+    AL, cache = linear_frente_at(flatten, params_at['W4'], params_at['b4'], params_at['at4'])
+    caches.append(cache)
+    return AL, caches, shape_z
+
+
+def linear_tras(dZ, cache):
+    """
+    Fórmula padrão para o calculo da retropropagação
+    """
+    A_ant, W, b = cache
+    m = A_ant.shape[1]
+    dW = 1 / m * np.dot(dZ, A_ant.T)
+    db = 1 / m * np.sum(dZ, axis=1, keepdims=True)
+    dA_prev = np.dot(W.T, dZ)
+    return dA_prev, dW, db
+
+
+def linear_tras_at(dA, cache, at: str):
+    """
+    Adicionando a função de ativação na retropropagação
+    """
+    global dZ
+    linear_cache, at_cache = cache
+    if at == 'softmax':
+        dZ = softmax_prop_tras(dA, at_cache)
+    if at == 'sigmoid':
+        dZ = sig_prop_tras(dA, at_cache)
+    if at == 'relu':
+        dZ = relu_prop_tras(dA, at_cache)
+    if at == 'lrelu':
+        dZ = l_relu_prop_tras(dA, at_cache)
+    dA_ant, dW, db = linear_tras(dZ, linear_cache)
+    return dA_ant, dW, db
+
+
+def conv_prop_tras(dA, cache):
+    """
+    Cálcula a Retropropagação do layer convolucional
+    :param dA: Valor da propagação para frente do cálculo da retropropagação do layer depois desse
+    :param cache: Dicionário com os A_ant, W, b, params_conv do cálculo da retropropagação do layer depois desse
+    :return: Retorna as derivadas para continuação da retropropagação
+    """
+    A_ant, W, b, params_conv = cache
+    m, n_H_ant, n_W_ant, n_C_ant = A_ant.shape
+    f, f, n_C_ant, n_C = W.shape
+    stride = params_conv['stride']
+    pad = params_conv['pad']
+    m, n_H, n_W, n_C = dA.shape
+    dA_ant = np.zeros((m, n_H_ant, n_W_ant, n_C_ant))
+    dW = np.zeros((f, f, n_C_ant, n_C))
+    db = np.zeros((1, 1, 1, n_C))
+    A_ant_pad = zero_pad(A_ant, pad)
+    dA_ant_pad = zero_pad(dA_ant, pad)
+    for m in range(m):
+        a_ant_pad = A_ant_pad[m, :, :, :]
+        da_ant_pad = dA_ant_pad[m, :, :, :]
+        for h in range(n_H):
+            for w in range(n_W):
+                for c in range(n_C):
+                    vert = h
+                    vert_fim = vert + f
+                    horiz = w
+                    horiz_fim = horiz + f
+                    a_ant_x = a_ant_pad[vert:vert_fim, horiz:horiz_fim, :]
+                    da_ant_pad[vert:vert_fim, horiz:horiz_fim, :] += W[:, :, :, c] * dA[m, h, w, c]
+                    dW[:, :, :, c] += a_ant_x * dA[m, h, w, c]
+                    db[:, :, :, c] += dA[m, h, w, c]
+        dA_ant[m, :, :, :] = da_ant_pad[pad: - pad, pad: - pad, :]
+    assert dA_ant.shape == (m, n_H, n_W, n_C)
+    return dA_ant, dW, db
+
+
+def max(x):
+    """ Fórmula para o cálculo do Pooling retropropagação utilizando o modo max"""
+    m_max = (x == np.max(x))
+    return m_max
+
+
+def media(dZ, shape):
+    """ Fórmula para o cálculo do Pooling retropropagação utilizando o modo media"""
+    n_H, n_W = shape
+    media = dZ / (n_H * n_W)
+    a = np.ones(shape) * media
+    return a
+
+
+def l2(dZ, shape):
+    """ Fórmula para o cálculo do Pooling retropropagação utilizando o modo l2"""
+    l2 = np.sqrt(np.sum(dZ))
+    a = np.ones(shape) * l2
+    return a
+
+
+def pool_prop_tras(dA, cache, modo='max'):
+    """
+    Cálcula a Retropropagação do layer Pooling
+    :param dA: Valor da propagação para frente do cálculo da retropropagação do layer depois desse
+    :param cache: Dicionário contendo A_ant e params_pool do cálculo da retropropagação do layer depois desse
+    :param modo: modo no qual foi aplicado o pooling na propagação para frente nesse layer
+    :return: Retorna as derivadas para continuação da retropropagação
+    """
+    A_ant, params_pool = cache
+    stride = params_pool['stride']
+    f = params_pool['f']
+    m, n_H_ant, n_W_ant, n_C_ant = A_ant.shape
+    m, n_H, n_W, n_C = dA.shape
+    dA_ant = np.zeros(A_ant.shape)
+    for m in range(m):
+        a_ant = A_ant[m, :, :, :]
+        for h in range(n_H):
+            for w in range(n_W):
+                for c in range(n_C):
+                    vert = h
+                    vert_fim = vert + f
+                    horiz = w
+                    horiz_fim = horiz + f
+                    if modo == 'max':
+                        a_ant_x = a_ant[vert:vert_fim, horiz:horiz_fim, c]
+                        m_max = max(a_ant_x)
+                        dA_ant[m, vert:vert_fim, horiz:horiz_fim, c] += np.multiply(m_max, dA[m, h, w, c])
+                    if modo == 'media':
+                        da = dA[m, h, w, c]
+                        shape = (f, f)
+                        dA_ant[m, vert:vert_fim, horiz:horiz_fim, c] += media(da, shape)
+                    if modo == 'l2':
+                        da = dA[m, h, w, c]
+                        shape = (f, f)
+                        dA_ant[m, vert:vert_fim, horiz:horiz_fim, c] += l2(da, shape)
+    assert dA_ant.shape == A_ant.shape
+    return dA_ant
+
+
+def propagacao_tras(AL, caches, Y, shape):
+    """
+    Calcula a retropropagação, arrumar dps
+    :param AL: Final da propogação pra frente do último layer
+    :param caches: Respectivos parametros da propagação pra frente do último layer
+    :param Y: Dados de Treino Y
+    :param shape: Shape para retornar da imagem chapada - propagação pra frente
+    :return: Retorna as derivadas dos layers -
+    ativação = derivadas_at; convolucional = derivadas_conv; pooling = derivadas_pool
+    """
+    derivadas_at = {}
+    derivadas_conv = {}
+    derivadas_pool = {}
+    L = len(caches)
+    m = AL.shape[0]
+    Y = Y.reshape(AL.shape)
+    dAL = - (np.divide(Y, AL) - np.divide(1 - Y, 1 - AL))
+    dA_ant_t, dW_t, db_t = linear_tras_at(dAL, caches[L - 1], 'sigmoid')
+    derivadas_at['dA' + str(L - 1)] = dA_ant_t
+    derivadas_at['dW' + str(L)] = dW_t
+    derivadas_at['db' + str(L)] = db_t
+    dA_ant_t = dA_ant_t.reshape((shape[0], shape[1], shape[2], shape[3]))
+    dA_ant_t = pool_prop_tras(dA_ant_t, caches[L - 2], 'max')
+    derivadas_pool['dA' + str(L - 1)] = dA_ant_t
+    dA_ant_t, dW_t, db_t = linear_tras_at(dAL, caches[L - 3], 'sigmoid')
+    derivadas_at['dA' + str(L - 2)] = dA_ant_t
+    derivadas_at['dW' + str(L - 1)] = dW_t
+    derivadas_at['db' + str(L - 1)] = db_t
+    dA_ant_t, dW_t, db_t = conv_prop_tras(dA_ant_t, caches[L - 4])
+    derivadas_conv['dA' + str(L - 1)] = dA_ant_t
+    derivadas_conv['dW' + str(L)] = dW_t
+    derivadas_conv['db' + str(L)] = db_t
+    for i in reversed(range(L - 4)):
+        cache_atual = caches[i]
+        dA_ant_t = pool_prop_tras(derivadas_pool['dA' + str(i + 1)], cache_atual, 'max')
+        derivadas_pool['dA' + str(i)] = dA_ant_t
+        dA_ant_t, dW_t, db_t = linear_tras_at(derivadas_at['dA' + str(i + 1)], cache_atual, 'relu')
+        derivadas_at['dA' + str(i + 1)] = dA_ant_t
+        derivadas_at['dW' + str(i + 2)] = dW_t
+        derivadas_at['dB' + str(i + 2)] = db_t
+        dA_ant_t, dW_t, db_t = conv_prop_tras(derivadas_conv['dA' + str(i + 1)], cache_atual)
+        derivadas_conv['dA' + str(i)] = dA_ant_t
+        derivadas_conv['dW' + str(i + 1)] = dW_t
+        derivadas_conv['db' + str(i + 1)] = db_t
+    return derivadas_at, derivadas_pool, derivadas_conv
+
+
+def f_custo(AL, Y):
+    m = Y.shape[1]
+    custo = (-1 / m) * np.sum(Y * np.log(AL) + (1 - Y) * np.log(1 - AL))
+    custo = np.squeeze(custo)
+    return custo
+
+
+def otimizar(par, derivadas, l_r):
+    par = par.copy()
+    L = len(par) // 2
+    for i in range(L):
+        par['W' + str(i + 1)] = par['W' + str(i + 1)] - l_r * derivadas['dW' + str(i + 1)]
+        par['b' + str(i + 1)] = par['b' + str(i + 1)] - l_r * derivadas['db' + str(i + 1)]
+    return par
+
+
+def modelo(X, Y, n_layers_at: list, fs_at, layers_conv: int, dims_l_conv: list, layers_pool: int, dims_l_pool: list,
+        l_r=0.09, n_it=5000, p_custo=False):
+    """
+    Modelo Rede Neural Convolucional
+    :param X: X_treino = .shape == (n de imagens, altura, largura, camadas)
+    :param Y: Y_treino = .shape == (n de imagens, 1)
+    :param n_layers_at: lista com os layers para função de ativação - detalhes ini_at
+    :param fs_at: lista com nomes(str) das funções de ativação mesmo len de n_layers_at
+    :param layers_conv: int de layers conv - detalhes ini_conv
+    :param dims_l_conv: lista com listas das caracteristicas de cada layer conv
+    = [[w_fs], [w_cs], [pads], [strides]] - detalhes ini_conv
+    :param layers_pool: int de layers pool - detalhes ini_pool
+    :param dims_l_pool: lista com listas das caracteristicas de cada layer pool = [[fs], [strides], [modos]]
+    :param l_r: Learning Rate
+    :param n_it: Número de treinamentos
+    :param p_custo: Printar Custo?
+    :return: Retorna os parametros de cada tipo de layer e o custo
+    """
+    custos = []
+    par_at = ini_at(n_layers_at, fs_at)
+    par_conv = ini_conv(layers_conv, dims_l_conv[0], dims_l_conv[1], dims_l_conv[2], dims_l_conv[3])
+    par_pool = ini_pool(layers_pool, dims_l_pool[0], dims_l_pool[1], dims_l_pool[2])
+    for i in range(0, n_it):
+        AL, caches, shape = propagacao_frente(X, par_at, par_conv, par_pool)
+        custo = f_custo(AL, Y)
+        derivadas_at, derivadas_pool, derivadas_conv = propagacao_tras(AL, caches, Y, shape)
+        par_at = otimizar(par_at, derivadas_at, l_r)
+        par_conv = otimizar(par_conv, derivadas_conv, l_r)
+        if i % 200 == 0:
+            custos.append(custo)
+        if p_custo and i % 200 == 0:
+            print(f'Custo com {i} iterações = {np.squeeze(custos)}')
+        return custos, par_at, par_conv, par_pool
+
+
+def prever(X_teste, par_at, par_conv, par_pool, p_previsao=False):
+    AL, caches, shape = propagacao_frente(X_teste, par_at, par_conv, par_pool)
+    previsao = AL > 0.5
+    if p_previsao:
+        if previsao:
+            print(f'Com o dado {X_teste}, É um/o ......')
+        else:
+            print(f'Com o dado {X_teste}, Não é um/o .......')
+    return previsao
