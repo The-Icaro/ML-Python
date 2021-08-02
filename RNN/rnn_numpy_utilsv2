@@ -1,0 +1,530 @@
+import numpy as np
+
+
+def softmax(x):
+    e_x = np.exp(x - np.max(x))
+    return e_x / e_x.sum(axis=0)
+
+
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+
+def suavizar(loss, loss2):
+    s = (loss * 0.999) + (loss2 * 0.001)
+    return s
+
+
+def loss_inicial(vocab_tamanho, seq_tamanho):
+    return - np.log(1.0/vocab_tamanho) * seq_tamanho
+
+
+def f_loss(Y_prev, Y):
+    m = Y.shape[1]
+    T_x = Y_prev.shape[2]
+    loss = 0
+    for t in range(T_x):
+        loss -= np.log(Y_prev[:, m, t][Y[:, m]])
+
+    return loss
+
+
+def rnn_celula(x, a_ant, params):
+    Wax = params["Wax"]
+    Waa = params["Waa"]
+    Wya = params["Wya"]
+    ba = params["ba"]
+    by = params["by"]
+    a_prox = np.tanh(np.dot(Waa, a_ant) + np.dot(Wax, x) + ba)
+    y_previsao = softmax(np.dot(Wya, a_prox) + by)
+
+    cache = (a_prox, a_ant, x, params)
+    return a_prox, y_previsao, cache
+
+
+def rnn_frente(x, a0, params):
+    caches = []
+    n_x, m, T_x = x.shape
+    n_y, n_a = params["Wya"].shape
+    a = np.zeros((n_y, m, T_x))
+    y_previsao = np.zeros((n_y, m, T_x))
+
+    a_prox = a0
+
+    for t in range(T_x):
+        a_prox, y_ant, cache = rnn_celula(x[:, :, t], a_prox, params)
+        a[:, :, t] = a_prox
+        y_previsao[:, :, t] = y_ant
+        caches.append(cache)
+
+    caches = (caches, x)
+    return a, y_previsao, caches
+
+
+def gru_full_celula(x, c_ant, params):
+    Wc = params["Wc"]
+    Wu = params["Wu"]
+    Wr = params["Wr"]
+    Wy = params["Wy"]
+    bc = params["bc"]
+    bu = params["bu"]
+    br = params["br"]
+    by = params["by"]
+
+    n_x, m = x.shape
+    n_y, n_c = Wy.shape
+    concat = np.zeros([n_x + n_c, m])
+    concat[:n_c, :] = c_ant
+    concat[n_c:, :] = x
+
+    ut = sigmoid(np.dot(Wu, concat) + bu)
+    rt = sigmoid(np.dot(Wr, concat) + br)
+    concat_2 = rt * concat
+    candidato = np.tanh(np.dot(Wc, concat_2) + bc)
+    c_prox = (1 - ut) * c_ant + (ut * candidato)
+
+    y_previsao = softmax(np.dot(Wy, c_prox) + by)
+
+    cache = (c_prox, c_ant, ut, rt, candidato, x, params)
+    return c_prox, y_previsao, cache
+
+
+def lstm_celula(x, a_ant, c_ant, params):
+    Wf = params["Wf"]
+    Wi = params["Wi"]
+    Wc = params["Wc"]
+    Wo = params["Wo"]
+    Wy = params["Wy"]
+    bf = params["by"]
+    bi = params["bi"]
+    bc = params["bc"]
+    bo = params["bo"]
+    by = params["by"]
+
+    n_x, m = x.shape
+    n_y, n_a = Wy.shape
+    concat = np.zeros([n_x + n_a, m])
+    concat[:n_a, :] = a_ant
+    concat[n_a:, :] = x
+
+    it = sigmoid(np.dot(Wi, concat) + bi)
+    ft = sigmoid(np.dot(Wf, concat) + bf)
+    ot = sigmoid(np.dot(Wo, concat) + bo)
+    candidato = np.tanh(np.dot(Wc, concat) + bc)
+    c_prox = (ft * c_ant) + (it + candidato)
+    ht = np.tanh(c_prox) * ot
+
+    y_previsao = softmax(np.dot(Wy, ht) + by)
+
+    cache = (ht, c_prox, a_ant, c_ant, it, ft, ot, candidato, x, params)
+    return ht, c_prox, y_previsao, cache
+
+
+def lstm_frente(x, a0, params):
+    caches = []
+
+    n_x, m, T_x = x.shape
+    n_y, n_a = params["Wy"].shape
+    a = np.zeros((n_a, m, T_x))
+    c = np.zeros_like(a)
+    y = np.zeros((n_y, m, T_x))
+    a_prox = a0
+    c_prox = np.zeros_like(a_prox)
+
+    for t in range(T_x):
+        a_prox, c_prox, y_prox, cache = lstm_celula(x[:, :, t], a_prox, c_prox, params)
+        a[:, :, t] = a_prox
+        y[:, :, t] = y_prox
+        c[:, :, t] = c_prox
+        caches.append(cache)
+
+    caches = (caches, x)
+    return a, y, c, caches
+
+
+def rnn_celula_retro(da_prox, cache):
+    a_prox, a_ant, x, params = cache
+    Wax = params["Wax"]
+    Waa = params["Waa"]
+    Wya = params["Wya"]
+    ba = params["ba"]
+    by = params["by"]
+
+    dtanh = (1 - a_prox * a_prox) * da_prox
+    dx = np.dot(Wax + dtanh)
+    dWax = np.dot(dtanh, x.T)
+    da_ant = np.dot(Waa.T, dtanh)
+    dWaa = np.dot(dtanh, a_ant.T)
+    dba = np.sum(dtanh, keepdims=True, axis=-1)
+
+    gradientes = {
+        "dx": dx,
+        "da_ant": da_ant,
+        "dWax": dWax,
+        "dWaa": dWaa,
+        "dba": dba,
+    }
+    return gradientes
+
+
+def rnn_retropropagacao(da, caches):
+    global dat_ant
+    caches, x = caches
+    a1, a0, x1, params = caches[0]
+    n_a, m, T_x = da.shape
+    n_x, m = x1.shape
+
+    dx = np.zeros((n_x, m, T_x))
+    dWax = np.zeros((n_a, n_x))
+    dWaa = np.zeros((n_a, n_a))
+    dba = np.zeros((n_a, 1))
+    da0 = np.zeros((n_a, m))
+    da_ant = np.zeros((n_a, m))
+
+    for t in reversed(range(T_x)):
+        gradientes = rnn_celula_retro(da_ant, caches[t])
+        dxt = gradientes["dx"]
+        dat_ant = gradientes["da_ant"]
+        dWaxt = gradientes["dWax"]
+        dWaat = gradientes["dWaa"]
+        dbat = gradientes["dba"]
+        dx[:, :, t] = dxt
+        dWax += dWaxt
+        dWaa += dWaat
+        dba += dbat
+
+    da0 = dat_ant
+    gradientes = {
+        "dx": dx,
+        "da0": da0,
+        "dWax": dWax,
+        "dWaa": dWaa,
+        "dba": dba
+    }
+    return gradientes
+
+
+def lstm_celula_retro(da_prox, dc_prox, cache):
+    (ht, c_prox, a_ant, c_ant, it, ft, ot, candidato, x, params) = cache
+    n_x, m = x.shape
+    n_a, m = ht.shape
+
+    dit = (da_prox * ot * (1 - np.tanh(c_prox) ** 2) + dc_prox) * candidato * (1 - it) * it
+    dft = (da_prox * ot * (1 - np.tanh(c_prox) ** 2) + dc_prox) * c_ant * (1 - ft) * ft
+    dot = da_prox * np.tanh(c_prox) * (1 - ot) * ot
+    dcdt = (da_prox * ot * (1 - np.tanh(c_prox) ** 2) + dc_prox) * (1 - candidato) * it
+    dc_ant = dc_prox * ft + ot * (1 - np.square(np.tanh(c_prox))) * ft * da_prox
+
+    dWf = np.dot(dft, np.concatenate((a_ant, x), axis=0).T)
+    dWi = np.dot(dit, np.concatenate((a_ant, x), axis=0).T)
+    dWc = np.dot(dcdt, np.concatenate((a_ant, x), axis=0).T)
+    dWo = np.dot(dot, np.concatenate((a_ant, x), axis=0).T)
+
+    dbf = np.sum(dft, axis=1, keepdims=True)
+    dbi = np.sum(dit, axis=1, keepdims=True)
+    dbc = np.sum(dcdt, axis=1, keepdims=True)
+    dbo = np.sum(dot, axis=1, keepdims=True)
+
+    da_ant = np.dot(params["Wf"][:, :n_a].T, dft) \
+             + np.dot(params["Wi"][:, :n_a].T, dit) \
+             + np.dot(params["Wc"][:, :n_a].T, dcdt) \
+             + np.dot(params["Wo"][:, :n_a].T, dot)
+    dx = np.dot(params["Wf"][:, n_a:].T, dft) \
+             + np.dot(params["Wi"][:, n_a:].T, dit) \
+             + np.dot(params["Wc"][:, n_a:].T, dcdt) \
+             + np.dot(params["Wo"][:, n_a:].T, dot)
+
+    gradientes = {
+        "dx": dx,
+        "da_ant": da_ant,
+        "dc_ant": dc_ant,
+        "dWf": dWf,
+        "dWi": dWi,
+        "dWc": dWc,
+        "dWo": dWo,
+        "dbf": dbf,
+        "dbi": dbi,
+        "dbc": dbc,
+        "dbo": dbo
+    }
+
+    return gradientes
+
+
+def lstm_retropropagacao(da, caches):
+    gradientes = {
+
+    }
+    caches, x = caches
+    (ht, c_prox, a_ant, c_ant, it, ft, ot, candidato, x, params) = caches[0]
+    n_a, m, T_x = da.shape
+    n_x, m = x.shape
+
+    dx = np.zeros((n_x, m, T_x))
+    da0 = np.zeros((n_a, m))
+
+    dat_ant = np.zeros((n_a, m))
+    dct_ant = np.zeros((n_a, n_a + n_x))
+
+    dWf = np.zeros((n_a, n_a + n_x))
+    dWi = np.zeros((n_a, n_a + n_x))
+    dWc = np.zeros((n_a, n_a + n_x))
+    dWo = np.zeros((n_a, n_a + n_x))
+
+    dbf = np.zeros((n_a, 1))
+    dbi = np.zeros((n_a, 1))
+    dbc = np.zeros((n_a, 1))
+    dbo = np.zeros((n_a, 1))
+
+    for t in reversed(range(T_x)):
+        gradientes = lstm_celula_retro(da[:, :, t] + dat_ant, dct_ant, caches[t])
+
+        dx[:, :, t] = gradientes["dxt"]
+
+        dWf += gradientes["dWf"]
+        dWi += gradientes["dWi"]
+        dWc += gradientes["dWc"]
+        dWo += gradientes["dWo"]
+
+        dbf += gradientes["dWf"]
+        dbi += gradientes["dbi"]
+        dbc += gradientes["dbc"]
+        dbo += gradientes["dbo"]
+
+    da0 = gradientes["da_ant"]
+
+    gradientes = {
+        "dx": dx,
+        "da0": da0,
+        "dWf": dWf,
+        "dWi": dWi,
+        "dWc": dWc,
+        "dWo": dWo,
+        "dbf": dbf,
+        "dbi": dbi,
+        "dbc": dbc,
+        "dbo": dbo
+    }
+
+    return gradientes
+
+
+def ini(n_a, n_x, n_y, v: float, tipo="rnn"):
+    if tipo == "rnn":
+        Wax = np.random.randn(n_a, n_x) * v
+        Waa = np.random.randn(n_a, n_a) * v
+        Wya = np.random.randn(n_y, n_a) * v
+
+        ba = np.zeros((n_a, 1))
+        by = np.zeros((n_y, 1))
+
+        params = {
+            "Wax": Wax,
+            "Waa": Waa,
+            "Wya": Wya,
+            "ba": ba,
+            "by": by
+        }
+
+        return params
+
+    if tipo == "lstm":
+        Wf = np.random.randn(n_a, n_a + n_x) * v
+        Wi = np.random.randn(n_a, n_a + n_x) * v
+        Wc = np.random.randn(n_a, n_a + n_x) * v
+        Wo = np.random.randn(n_a, n_a + n_x) * v
+        Wy = np.random.randn(n_y, n_a) * v
+
+        bf = np.zeros((n_a, 1))
+        bi = np.zeros((n_a, 1))
+        bc = np.zeros((n_a, 1))
+        bo = np.zeros((n_a, 1))
+        by = np.zeros((n_y, 1))
+
+        params = {
+            "Wf": Wf,
+            "Wi": Wi,
+            "Wc": Wc,
+            "Wo": Wo,
+            "Wy": Wy,
+            "bf": bf,
+            "bi": bi,
+            "bc": bc,
+            "bo": bo,
+            "by": by,
+        }
+        return params
+
+    if tipo == "gru":
+        Wc = np.random.randn(n_a, n_a + n_x) * v
+        Wu = np.random.randn(n_a, n_a + n_x) * v
+        Wr = np.random.randn(n_a, n_a + n_x) * v
+        Wy = np.random.randn(n_y, n_a) * v
+
+        bc = np.zeros((n_a, 1))
+        bu = np.zeros((n_a, 1))
+        br = np.zeros((n_a, 1))
+        by = np.zeros((n_y, 1))
+
+        params = {
+            "Wc": Wc,
+            "Wu": Wu,
+            "Wr": Wr,
+            "Wy": Wy,
+            "bc": bc,
+            "bu": bu,
+            "br": br,
+            "by": by
+        }
+        return params
+
+
+def up_params(params, gradientes, l_r=0.05, tipo="rnn"):
+    if tipo == "rnn":
+        Wax = params["Wax"]
+        Waa = params["Wax"]
+        Wya = params["Wya"]
+        ba = params["ba"]
+        by = params["by"]
+
+        dWax = gradientes["dWax"]
+        dWaa = gradientes["dWaa"]
+        dWya = gradientes["dWya"]
+        dba = gradientes["dba"]
+        dby = gradientes["dby"]
+
+        Wax = Wax - l_r * dWax
+        Waa = Waa - l_r * dWaa
+        Wya = Wya - l_r * dWya
+        ba = ba - l_r * dba
+        by = by - l_r * dby
+
+        params = {
+            "Wax": Wax,
+            "Waa": Waa,
+            "Wya": Wya,
+            "ba": ba,
+            "by": by
+        }
+
+    if tipo == "lstm":
+        Wf = params["Wf"]
+        Wi = params["Wi"]
+        Wc = params["Wc"]
+        Wo = params["Wo"]
+        Wy = params["Wy"]
+        bf = params["bf"]
+        bi = params["bi"]
+        bc = params["bc"]
+        bo = params["bo"]
+        by = params["by"]
+
+        dWf = gradientes["dWf"]
+        dWi = gradientes["dWi"]
+        dWc = gradientes["dWc"]
+        dWo = gradientes["dWo"]
+        dWy = gradientes["dWy"]
+        dbf = gradientes["dWf"]
+        dbi = gradientes["dbi"]
+        dbc = gradientes["dbc"]
+        dbo = gradientes["dbo"]
+        dby = gradientes["dby"]
+
+        Wf = Wf - l_r * dWf
+        Wi = Wi - l_r * dWi
+        Wc = Wc - l_r * dWc
+        Wo = Wo - l_r * dWo
+        Wy = Wy - l_r * dWy
+        bf = bf - l_r * dbf
+        bi = bi - l_r * dbi
+        bc = bc - l_r * dbc
+        bo = bo - l_r * dbo
+        by = by - l_r * dby
+
+        params = {
+            "Wf": Wf,
+            "Wi": Wi,
+            "Wc": Wc,
+            "Wo": Wo,
+            "Wy": Wy,
+            "bf": bf,
+            "bi": bi,
+            "bc": bc,
+            "bo": bo,
+            "by": by,
+        }
+
+    if tipo == "gru":
+        Wc = params["Wc"]
+        Wu = params["Wu"]
+        Wr = params["Wr"]
+        Wy = params["Wy"]
+        bc = params["bc"]
+        bu = params["bu"]
+        br = params["br"]
+        by = params["by"]
+
+        dWc = gradientes["dWc"]
+        dWu = gradientes["dWu"]
+        dWr = gradientes["dWr"]
+        dWy = gradientes["dWy"]
+        dbc = gradientes["dbc"]
+        dbu = gradientes["dbu"]
+        dbr = gradientes["dbr"]
+        dby = gradientes["dby"]
+
+        Wc = Wc - l_r * dWc
+        Wu = Wu - l_r * dWu
+        Wr = Wr - l_r * dWr
+        Wy = Wy - l_r * dWy
+        bc = bc - l_r * dbc
+        bu = bu - l_r * dbu
+        br = br - l_r * dbr
+        by = by - l_r * dby
+
+        params = {
+            "Wc": Wc,
+            "Wu": Wu,
+            "Wr": Wr,
+            "Wy": Wy,
+            "bc": bc,
+            "bu": bu,
+            "br": br,
+            "by": by
+        }
+
+    return params
+
+
+def clip(gradientes, max_valor):
+    dWaa = gradientes["dWaa"]
+    dWax = gradientes["dWax"]
+    dWya = gradientes["dWya"]
+    dba = gradientes["dba"]
+    dby = gradientes["dby"]
+
+    for g in [dWaa, dWax, dWya, dba, dby]:
+        np.clip(g, -max_valor, max_valor, out=g)
+
+        gradientes = {
+            "dWaa": dWaa,
+            "dWax": dWax,
+            "dWya": dWya,
+            "dba": dba,
+            "dby": dby,
+        }
+
+    return gradientes
+
+
+def otimizar(X, Y, a_ant, params, l_r=0.01, m_v=5):
+    a, y_prev, caches = rnn_frente(X, a_ant, params)
+    loss = f_loss(y_prev, Y)
+
+    gradientes = rnn_retropropagacao(a, caches)
+    gradientes = clip(gradientes, m_v)
+
+    params = up_params(params, gradientes, l_r, "rnn")
+
+    return loss, gradientes, a, params
+
